@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createClient } from "@supabase/supabase-js";
 
 /**
  * Kids Calendar (Month Grid) - dependency-free.
@@ -12,11 +13,48 @@ import { useMemo, useState } from "react";
 // ------------------ tiny utils ------------------
 const pad2 = (n) => String(n).padStart(2, "0");
 const ymd = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-
-// safe key-existence check (treat empty string as "noted")
-const hasKey = (obj, key) => obj != null && Object.prototype.hasOwnProperty.call(obj, key);
-
 const hm = (d) => `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+
+
+// ------------------ Supabase (single-row app state) ------------------
+// NOTE: Uses Vite env vars: VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+// Create client only when env vars exist (keeps local/dev from crashing if not configured)
+const supabase =
+  SUPABASE_URL && SUPABASE_ANON_KEY ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+
+// We persist the app's core data as JSON in a single row.
+// Table expected: public.app_state (id text primary key, data jsonb, updated_at timestamptz default now())
+const APP_STATE_ROW_ID = "default";
+
+function serializeAppState({ tagCatalog, kids, events }) {
+  return {
+    tagCatalog,
+    kids,
+    events: (events ?? []).map((e) => ({
+      ...e,
+      // Dates become ISO strings so JSON can store them
+      start: e?.start instanceof Date ? e.start.toISOString() : e?.start,
+      end: e?.end instanceof Date ? e.end.toISOString() : e?.end,
+    })),
+  };
+}
+
+function deserializeAppState(data) {
+  if (!data || typeof data !== "object") return null;
+  const tagCatalog = data.tagCatalog ?? null;
+  const kids = Array.isArray(data.kids) ? data.kids : null;
+  const events = Array.isArray(data.events)
+    ? data.events.map((e) => ({
+        ...e,
+        start: e?.start ? new Date(e.start) : e?.start,
+        end: e?.end ? new Date(e.end) : e?.end,
+      }))
+    : null;
+  return { tagCatalog, kids, events };
+}
 
 function combineDateTime(dateStr, timeStr) {
   const [y, m, d] = dateStr.split("-").map(Number);
@@ -588,7 +626,7 @@ function MonthCalendar({ cursor, setCursor, events, onPickDay, onOpenEvent, atte
               <div style={{ marginTop: 6, display: "grid", gap: 6 }}>
                 {list.slice(0, 4).map((ev) => {
                   const unassigned = (ev.participants?.length ?? 0) === 0;
-                  const needsAttention = (attentionById?.[ev.id] ?? 0) > 0;
+                  const needsAttention = unassigned || ((attentionById?.[ev.id] ?? 0) > 0);
                   const isStart = sameDay(d, ev.start);
                   const timeLabel = isStart ? hm(ev.start) : "↔";
                   return (
@@ -664,6 +702,53 @@ export default function App() {
   // Events
   // { id, title, start: Date, end: Date, tags: string[], participants: [{kidId,status}] }
   const [events, setEvents] = useState([]);
+
+  // ---------- Supabase persistence ----------
+  // Loads/saves the app's core data (tagCatalog, kids, events) to Supabase.
+  const saveTimerRef = useRef(null);
+  const didLoadRef = useRef(false);
+
+  useEffect(() => {
+    const load = async () => {
+      if (!supabase) return;
+      const { data, error } = await supabase
+        .from("app_state")
+        .select("data")
+        .eq("id", APP_STATE_ROW_ID)
+        .maybeSingle();
+
+      if (error) {
+        // If table/row doesn't exist yet, keep running locally.
+        didLoadRef.current = true;
+        return;
+      }
+
+      const parsed = deserializeAppState(data?.data);
+      if (parsed?.tagCatalog) setTagCatalog(parsed.tagCatalog);
+      if (parsed?.kids) setKids(parsed.kids);
+      if (parsed?.events) setEvents(parsed.events);
+
+      didLoadRef.current = true;
+    };
+
+    load();
+  }, []);
+
+  useEffect(() => {
+    if (!supabase) return;
+    if (!didLoadRef.current) return;
+
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(async () => {
+      const payload = serializeAppState({ tagCatalog, kids, events });
+      await supabase.from("app_state").upsert({ id: APP_STATE_ROW_ID, data: payload }, { onConflict: "id" });
+    }, 500);
+
+    return () => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    };
+  }, [tagCatalog, kids, events]);
+
 
   // Calendar cursor
   const [calCursor, setCalCursor] = useState(startOfMonth(new Date()));
@@ -1071,21 +1156,20 @@ export default function App() {
     return hits;
   }, [activeEventForDetail, kids]);
   const attentionById = useMemo(() => {
-    // Count kids that match this event's tags (i.e., would appear in Suggest)
-    // but have NOT been handled yet (neither confirmed/assigned nor noted).
     const out = {};
     for (const ev of events) {
+      const baseline = ev.suggestedAt ?? 0;
+      if (!baseline) { out[ev.id] = 0; continue; }
       const evTagsSet = new Set(ev.tags ?? []);
       if (evTagsSet.size === 0) { out[ev.id] = 0; continue; }
-
       const assigned = new Set((ev.participants ?? []).map((p) => p.kidId));
       let c = 0;
       for (const k of kids) {
-        if (assigned.has(k.id)) continue; // confirmed/assigned already handled
+        if (assigned.has(k.id)) continue;
+        const createdAt = k.createdAt ?? 0;
+        if (createdAt <= baseline) continue;
         const score = intersectionCount(k.tags ?? [], evTagsSet);
-        if (score <= 0) continue; // not in suggest
-        const noted = hasKey(ev.suggestNotes ?? {}, k.id); // note saved (even if empty string)
-        if (!noted) c++;
+        if (score > 1) { c++; }
       }
       out[ev.id] = c;
     }
@@ -1504,7 +1588,7 @@ export default function App() {
                       <input type="checkbox" checked={!!suggestSelection[kid.id]} onChange={() => toggleSuggestPick(kid.id)} />
                       <div style={{ flex: 1 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <div style={{ fontWeight: 900, background: hasKey(activeEventForSuggest?.suggestNotes ?? {}, kid.id) ? "#eee" : "transparent", padding: hasKey(activeEventForSuggest?.suggestNotes ?? {}, kid.id) ? "2px 6px" : 0, borderRadius: hasKey(activeEventForSuggest?.suggestNotes ?? {}, kid.id) ? 8 : 0, display: "inline-block" }}>
+                          <div style={{ fontWeight: 900 }}>
                             {kid.name}{" "}
                             {newCandidateIdsForSuggest.has(kid.id) ? (
                               <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 900, color: "#b42318" }}>NEW</span>
