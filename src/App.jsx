@@ -427,7 +427,7 @@ function TagPickerModal({
 
           {/* Selected */}
           {canSelect ? (
-            <div style={{ marginTop: 14 }}>
+            <div style={{ marginTop: 14, maxHeight: "70vh", overflowY: "auto" }}>
               <div style={{ fontWeight: 800, marginBottom: 8 }}>แท็กที่เลือก</div>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 {selectedTags.length === 0 ? (
