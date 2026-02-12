@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createClient } from "@supabase/supabase-js";
 
 /**
  * Kids Calendar (Month Grid) - dependency-free.
@@ -12,11 +13,48 @@ import { useMemo, useState } from "react";
 // ------------------ tiny utils ------------------
 const pad2 = (n) => String(n).padStart(2, "0");
 const ymd = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-
-// safe key-existence check (treat empty string as "noted")
-const hasKey = (obj, key) => obj != null && Object.prototype.hasOwnProperty.call(obj, key);
-
 const hm = (d) => `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+
+
+// ------------------ Supabase (single-row app state) ------------------
+// NOTE: Uses Vite env vars: VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+// Create client only when env vars exist (keeps local/dev from crashing if not configured)
+const supabase =
+  SUPABASE_URL && SUPABASE_ANON_KEY ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+
+// We persist the app's core data as JSON in a single row.
+// Table expected: public.app_state (id text primary key, data jsonb, updated_at timestamptz default now())
+const APP_STATE_ROW_ID = "default";
+
+function serializeAppState({ tagCatalog, kids, events }) {
+  return {
+    tagCatalog,
+    kids,
+    events: (events ?? []).map((e) => ({
+      ...e,
+      // Dates become ISO strings so JSON can store them
+      start: e?.start instanceof Date ? e.start.toISOString() : e?.start,
+      end: e?.end instanceof Date ? e.end.toISOString() : e?.end,
+    })),
+  };
+}
+
+function deserializeAppState(data) {
+  if (!data || typeof data !== "object") return null;
+  const tagCatalog = data.tagCatalog ?? null;
+  const kids = Array.isArray(data.kids) ? data.kids : null;
+  const events = Array.isArray(data.events)
+    ? data.events.map((e) => ({
+        ...e,
+        start: e?.start ? new Date(e.start) : e?.start,
+        end: e?.end ? new Date(e.end) : e?.end,
+      }))
+    : null;
+  return { tagCatalog, kids, events };
+}
 
 function combineDateTime(dateStr, timeStr) {
   const [y, m, d] = dateStr.split("-").map(Number);
@@ -468,7 +506,7 @@ function TagPickerModal({
 }
 
 // ------------------ Calendar (month grid) ------------------
-function MonthCalendar({ cursor, setCursor, events, onPickDay, onOpenEvent, attentionById }) {
+function MonthCalendar({ cursor, setCursor, events, onPickDay, onOpenEvent, attentionById, onOpenListView }) {
   const monthStart = startOfMonth(cursor);
   const gridStart = startOfWeekMonday(monthStart);
 
@@ -527,6 +565,13 @@ function MonthCalendar({ cursor, setCursor, events, onPickDay, onOpenEvent, atte
         }}
       >
         <div style={{ fontWeight: 900, fontSize: 16, flex: 1 }}>Calendar {monthLabel}</div>
+        <button
+          onClick={onOpenListView}
+          style={{ padding: "8px 10px", borderRadius: 12, border: "1px solid #ddd", background: "#fff", cursor: "pointer" }}
+          title="List View"
+        >
+          List View
+        </button>
         <button onClick={goPrev} style={{ padding: "8px 10px", borderRadius: 12, border: "1px solid #ddd", background: "#fff", cursor: "pointer" }}>
           ◀
         </button>
@@ -588,7 +633,7 @@ function MonthCalendar({ cursor, setCursor, events, onPickDay, onOpenEvent, atte
               <div style={{ marginTop: 6, display: "grid", gap: 6 }}>
                 {list.slice(0, 4).map((ev) => {
                   const unassigned = (ev.participants?.length ?? 0) === 0;
-                  const needsAttention = (attentionById?.[ev.id] ?? 0) > 0;
+                  const needsAttention = unassigned || ((attentionById?.[ev.id] ?? 0) > 0);
                   const isStart = sameDay(d, ev.start);
                   const timeLabel = isStart ? hm(ev.start) : "↔";
                   return (
@@ -665,6 +710,53 @@ export default function App() {
   // { id, title, start: Date, end: Date, tags: string[], participants: [{kidId,status}] }
   const [events, setEvents] = useState([]);
 
+  // ---------- Supabase persistence ----------
+  // Loads/saves the app's core data (tagCatalog, kids, events) to Supabase.
+  const saveTimerRef = useRef(null);
+  const didLoadRef = useRef(false);
+
+  useEffect(() => {
+    const load = async () => {
+      if (!supabase) return;
+      const { data, error } = await supabase
+        .from("app_state")
+        .select("data")
+        .eq("id", APP_STATE_ROW_ID)
+        .maybeSingle();
+
+      if (error) {
+        // If table/row doesn't exist yet, keep running locally.
+        didLoadRef.current = true;
+        return;
+      }
+
+      const parsed = deserializeAppState(data?.data);
+      if (parsed?.tagCatalog) setTagCatalog(parsed.tagCatalog);
+      if (parsed?.kids) setKids(parsed.kids);
+      if (parsed?.events) setEvents(parsed.events);
+
+      didLoadRef.current = true;
+    };
+
+    load();
+  }, []);
+
+  useEffect(() => {
+    if (!supabase) return;
+    if (!didLoadRef.current) return;
+
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(async () => {
+      const payload = serializeAppState({ tagCatalog, kids, events });
+      await supabase.from("app_state").upsert({ id: APP_STATE_ROW_ID, data: payload }, { onConflict: "id" });
+    }, 500);
+
+    return () => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    };
+  }, [tagCatalog, kids, events]);
+
+
   // Calendar cursor
   const [calCursor, setCalCursor] = useState(startOfMonth(new Date()));
 
@@ -682,6 +774,12 @@ export default function App() {
   const [openTagLibrary, setOpenTagLibrary] = useState(false);
 
   const [activeEventIdForDetail, setActiveEventIdForDetail] = useState(null);
+
+  // List View
+  const [openListView, setOpenListView] = useState(false);
+  const [listFilterTags, setListFilterTags] = useState([]);
+  const [openListFilter, setOpenListFilter] = useState(false);
+  const [listKeyword, setListKeyword] = useState("");
 
   const [activeEventIdForSuggest, setActiveEventIdForSuggest] = useState(null);
   const [suggestSearch, setSuggestSearch] = useState("");
@@ -849,6 +947,40 @@ export default function App() {
   };
 
   const visibleEvents = useMemo(() => events.filter(eventIsVisible), [events, visibleKidIds]);
+
+  // ---------- list view filtering ----------
+  const kidById = useMemo(() => {
+    const m = new Map();
+    for (const k of kids) m.set(k.id, k);
+    return m;
+  }, [kids]);
+
+  const listViewEvents = useMemo(() => {
+    const q = (listKeyword || "").trim().toLowerCase();
+    const filterSet = new Set(listFilterTags);
+
+    const matchTag = (ev) => {
+      if (filterSet.size === 0) return true;
+      const evTags = ev.tags ?? [];
+      for (const t of filterSet) if (!evTags.includes(t)) return false;
+      return true;
+    };
+
+    const matchKeyword = (ev) => {
+      if (!q) return true;
+      const titleHit = (ev.title ?? "").toLowerCase().includes(q);
+      const tagHit = (ev.tags ?? []).some((t) => String(t).toLowerCase().includes(q));
+      const parts = ev.participants ?? [];
+      const kidHit = parts.some((p) => (kidById.get(p.kidId)?.name ?? "").toLowerCase().includes(q));
+      const noteHit = parts.some((p) => (p.note ?? "").toLowerCase().includes(q));
+      return titleHit || tagHit || kidHit || noteHit;
+    };
+
+    const out = visibleEvents.filter((ev) => matchTag(ev) && matchKeyword(ev));
+    out.sort((a, b) => a.start - b.start);
+    return out;
+  }, [visibleEvents, listFilterTags, listKeyword, kidById]);
+
 
   // ---------- create event ----------
   const pickDay = (d) => {
@@ -1071,21 +1203,20 @@ export default function App() {
     return hits;
   }, [activeEventForDetail, kids]);
   const attentionById = useMemo(() => {
-    // Count kids that match this event's tags (i.e., would appear in Suggest)
-    // but have NOT been handled yet (neither confirmed/assigned nor noted).
     const out = {};
     for (const ev of events) {
+      const baseline = ev.suggestedAt ?? 0;
+      if (!baseline) { out[ev.id] = 0; continue; }
       const evTagsSet = new Set(ev.tags ?? []);
       if (evTagsSet.size === 0) { out[ev.id] = 0; continue; }
-
       const assigned = new Set((ev.participants ?? []).map((p) => p.kidId));
       let c = 0;
       for (const k of kids) {
-        if (assigned.has(k.id)) continue; // confirmed/assigned already handled
+        if (assigned.has(k.id)) continue;
+        const createdAt = k.createdAt ?? 0;
+        if (createdAt <= baseline) continue;
         const score = intersectionCount(k.tags ?? [], evTagsSet);
-        if (score <= 0) continue; // not in suggest
-        const noted = hasKey(ev.suggestNotes ?? {}, k.id); // note saved (even if empty string)
-        if (!noted) c++;
+        if (score > 1) { c++; }
       }
       out[ev.id] = c;
     }
@@ -1240,7 +1371,7 @@ export default function App() {
                     🗑️
                   </IconButton>
                 </div>
-              </div> 
+              </div>
 
               <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
                 {(kid.tags ?? []).length === 0 ? <span style={{ fontSize: 12, opacity: 0.6 }}>(ยังไม่มี tag)</span> : null}
@@ -1312,9 +1443,163 @@ export default function App() {
             onPickDay={pickDay}
             onOpenEvent={openEventDetail}
             attentionById={attentionById}
+            onOpenListView={() => setOpenListView(true)}
           />
         </div>
       </div>
+
+      
+      {/* List View */}
+      {openListView ? (
+        <Modal title="List View" onClose={() => setOpenListView(false)} width={920}>
+          <div style={{ display: "grid", gap: 10 }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <div style={{ fontWeight: 900, marginRight: 6 }}>ตัวกรอง (Tag)</div>
+              <button
+                onClick={() => setOpenListFilter(true)}
+                style={{ padding: "8px 10px", borderRadius: 12, border: "1px solid #ddd", background: "#fff", cursor: "pointer" }}
+              >
+                เลือกตัวกรอง…
+              </button>
+              {listFilterTags.length === 0 ? (
+                <span style={{ fontSize: 12, opacity: 0.65 }}>(ยังไม่เลือก)</span>
+              ) : (
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {listFilterTags.map((t) => (
+                    <TagPill key={t} text={t} />
+                  ))}
+                  <button
+                    onClick={() => setListFilterTags([])}
+                    style={{ padding: "6px 8px", borderRadius: 999, border: "1px solid #ddd", background: "#fff", cursor: "pointer", fontSize: 12 }}
+                    title="ล้างตัวกรอง"
+                  >
+                    ล้าง
+                  </button>
+                </div>
+              )}
+
+              <div style={{ flex: 1 }} />
+
+              <input
+                value={listKeyword}
+                onChange={(e) => setListKeyword(e.target.value)}
+                placeholder="ค้นหา keyword… (ชื่อกิจกรรม / tag / ชื่อเด็ก / note)"
+                style={{
+                  minWidth: 280,
+                  padding: "9px 10px",
+                  borderRadius: 12,
+                  border: "1px solid #ddd",
+                  outline: "none",
+                }}
+              />
+            </div>
+
+            <div style={{ borderTop: "1px solid #eee", paddingTop: 10, maxHeight: "70vh", overflow: "auto" }}>
+              {listViewEvents.length === 0 ? (
+                <div style={{ padding: 12, opacity: 0.65 }}>ไม่พบกิจกรรม</div>
+              ) : (
+                (() => {
+                  const groups = [];
+                  let last = null;
+                  for (const ev of listViewEvents) {
+                    const k = ymd(ev.start);
+                    if (k !== last) {
+                      groups.push({ key: k, items: [ev] });
+                      last = k;
+                    } else {
+                      groups[groups.length - 1].items.push(ev);
+                    }
+                  }
+                  return groups.map((g) => (
+                    <div key={g.key} style={{ padding: "10px 0" }}>
+                      <div style={{ fontWeight: 900, marginBottom: 8 }}>{g.key}</div>
+                      <div style={{ display: "grid", gap: 10 }}>
+                        {g.items.map((ev) => {
+                          const unassigned = (ev.participants?.length ?? 0) === 0;
+                          const needsAttention = unassigned || ((attentionById?.[ev.id] ?? 0) > 0);
+                          return (
+                            <div
+                              key={ev.id}
+                              style={{ border: "1px solid #eee", borderRadius: 14, padding: 12, background: needsAttention ? "#fff4e6" : "#fff" }}
+                            >
+                              <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+                                <div style={{ fontWeight: 900, flex: 1 }}>
+                                  {needsAttention ? "⚠️ " : ""}{hm(ev.start)}–{hm(ev.end)} {ev.title}
+                                </div>
+                                <button
+                                  onClick={() => openEventDetail(ev.id)}
+                                  style={{ padding: "8px 10px", borderRadius: 12, border: "1px solid #ddd", background: "#fff", cursor: "pointer" }}
+                                >
+                                  เปิดรายละเอียด
+                                </button>
+                              </div>
+
+                              {ev.tags?.length ? (
+                                <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                                  {ev.tags.map((t) => (
+                                    <TagPill key={`${ev.id}-t-${t}`} text={t} />
+                                  ))}
+                                </div>
+                              ) : null}
+
+                              <div style={{ marginTop: 10 }}>
+                                <div style={{ fontWeight: 900, marginBottom: 6 }}>เด็กที่เกี่ยวข้อง</div>
+                                {(ev.participants ?? []).length === 0 ? (
+                                  <div style={{ fontSize: 12, opacity: 0.65 }}>(ยังไม่มีเด็กในกิจกรรมนี้)</div>
+                                ) : (
+                                  <div style={{ display: "grid", gap: 6 }}>
+                                    {(ev.participants ?? []).map((p) => {
+                                      const kid = kidById.get(p.kidId);
+                                      const name = kid?.name ?? "(ไม่พบชื่อเด็ก)";
+                                      return (
+                                        <div
+                                          key={`${ev.id}-p-${p.kidId}`}
+                                          style={{ padding: "8px 10px", borderRadius: 12, border: "1px solid #eee", background: "#fafafa" }}
+                                        >
+                                          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                                            <div style={{ fontWeight: 900 }}>{name}</div>
+                                            <span style={{ fontSize: 12, opacity: 0.7 }}>
+                                              {p.status === "confirmed" ? "confirmed" : "suggested"}
+                                            </span>
+                                            {p.note ? <span style={{ fontSize: 12, opacity: 0.8 }}>• {p.note}</span> : null}
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+
+                              {((attentionById?.[ev.id] ?? 0) > 0) ? (
+                                <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8 }}>
+                                  ⚠️ มีเด็กใหม่ที่ matchScore &gt; 1 และยังไม่ถูก note/confirm: {attentionById?.[ev.id] ?? 0} คน
+                                </div>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ));
+                })()
+              )}
+            </div>
+          </div>
+        </Modal>
+      ) : null}
+
+      <TagPickerModal
+        open={openListFilter}
+        title="ตัวกรองกิจกรรม (ตาม Tag)"
+        tagCatalog={tagCatalog}
+        setTagCatalog={setTagCatalog}
+        selectedTags={listFilterTags}
+        setSelectedTags={setListFilterTags}
+        onCancel={() => setOpenListFilter(false)}
+        onSave={() => setOpenListFilter(false)}
+        saveLabel="ปิด"
+      />
+
 
       {/* Tag Library modal */}
       <TagPickerModal
@@ -1504,7 +1789,7 @@ export default function App() {
                       <input type="checkbox" checked={!!suggestSelection[kid.id]} onChange={() => toggleSuggestPick(kid.id)} />
                       <div style={{ flex: 1 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <div style={{ fontWeight: 900, background: hasKey(activeEventForSuggest?.suggestNotes ?? {}, kid.id) ? "#eee" : "transparent", padding: hasKey(activeEventForSuggest?.suggestNotes ?? {}, kid.id) ? "2px 6px" : 0, borderRadius: hasKey(activeEventForSuggest?.suggestNotes ?? {}, kid.id) ? 8 : 0, display: "inline-block" }}>
+                          <div style={{ fontWeight: 900 }}>
                             {kid.name}{" "}
                             {newCandidateIdsForSuggest.has(kid.id) ? (
                               <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 900, color: "#b42318" }}>NEW</span>
