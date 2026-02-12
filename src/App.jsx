@@ -488,7 +488,7 @@ function TagPickerModal({
 }
 
 // ------------------ Calendar (month grid) ------------------
-function MonthCalendar({ cursor, setCursor, events, onPickDay, onOpenEvent, attentionById }) {
+function MonthCalendar({ cursor, setCursor, events, onPickDay, onOpenEvent, attentionById, onOpenListView }) {
   const monthStart = startOfMonth(cursor);
   const gridStart = startOfWeekMonday(monthStart);
 
@@ -555,6 +555,9 @@ function MonthCalendar({ cursor, setCursor, events, onPickDay, onOpenEvent, atte
         </button>
         <button onClick={goNext} style={{ padding: "8px 10px", borderRadius: 12, border: "1px solid #ddd", background: "#fff", cursor: "pointer" }}>
           ▶
+        </button>
+        <button onClick={() => onOpenListView?.()} style={{ padding: "8px 10px", borderRadius: 12, border: "1px solid #ddd", background: "#fff", cursor: "pointer" }}>
+          List View
         </button>
       </div>
 
@@ -684,6 +687,12 @@ export default function App() {
   // Events
   // { id, title, start: Date, end: Date, tags: string[], participants: [{kidId,status}] }
   const [events, setEvents] = useState([]);
+
+  // List View (modal)
+  const [openListView, setOpenListView] = useState(false);
+  const [listFilterTags, setListFilterTags] = useState([]);
+  const [openListFilterTagPicker, setOpenListFilterTagPicker] = useState(false);
+  const [listSearch, setListSearch] = useState("");
 
   // ---- Supabase persistence (load once, then auto-save on data changes) ----
   const hydratedRef = useRef(false);
@@ -1180,6 +1189,55 @@ export default function App() {
     return out;
   }, [events, kids]);
 
+  // ---------- List View data ----------
+  const listViewEvents = useMemo(() => {
+    const norm = (s) => String(s ?? "").toLowerCase().trim();
+
+    const activeTags = new Set(listFilterTags ?? []);
+    const q = norm(listSearch);
+
+    const matchTags = (ev) => {
+      if (activeTags.size === 0) return true;
+      const evTags = new Set(ev.tags ?? []);
+      for (const t of activeTags) if (!evTags.has(t)) return false;
+      return true;
+    };
+
+    const matchQuery = (ev) => {
+      if (!q) return true;
+      const hay = [
+        ev.title,
+        ...(ev.tags ?? []),
+        ...(ev.participants ?? []).map((p) => kidById.get(p.kidId)?.name ?? ""),
+        ...Object.values(ev.suggestNotes ?? {}),
+      ]
+        .map(norm)
+        .join(" | ");
+      return hay.includes(q);
+    };
+
+    return (events ?? [])
+      .filter((ev) => matchTags(ev) && matchQuery(ev))
+      .slice()
+      .sort((a, b) => (a.start?.getTime?.() ?? 0) - (b.start?.getTime?.() ?? 0));
+  }, [events, kidById, listFilterTags, listSearch]);
+
+  const listViewGrouped = useMemo(() => {
+    const groups = new Map(); // ymd(dayStart) -> events[]
+    for (const ev of listViewEvents) {
+      const key = ymd(atStartOfDay(ev.start));
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(ev);
+    }
+    // ensure each group is sorted
+    for (const [k, arr] of groups) {
+      arr.sort((a, b) => (a.start?.getTime?.() ?? 0) - (b.start?.getTime?.() ?? 0));
+      groups.set(k, arr);
+    }
+    return Array.from(groups.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  }, [listViewEvents]);
+
+
 
   // ---------- layout ----------
   return (
@@ -1400,6 +1458,7 @@ export default function App() {
             onPickDay={pickDay}
             onOpenEvent={openEventDetail}
             attentionById={attentionById}
+            onOpenListView={() => setOpenListView(true)}
           />
         </div>
       </div>
@@ -1643,6 +1702,146 @@ export default function App() {
                 </button>
               </div>
             </div>
+          </div>
+        </Modal>
+      ) : null}
+
+
+      {/* List View: tag filter modal */}
+      <TagPickerModal
+        open={openListFilterTagPicker}
+        title="ตัวกรอง List View (ตาม Tag)"
+        tagCatalog={tagCatalog}
+        setTagCatalog={setTagCatalog}
+        selectedTags={listFilterTags}
+        setSelectedTags={setListFilterTags}
+        onCancel={() => setOpenListFilterTagPicker(false)}
+        onSave={() => setOpenListFilterTagPicker(false)}
+        saveLabel="ใช้ตัวกรองนี้"
+        allowEditLibrary={false}
+      />
+
+      {/* List View modal */}
+      {openListView ? (
+        <Modal title="List View" onClose={() => setOpenListView(false)} width={980}>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <button
+              onClick={() => setOpenListFilterTagPicker(true)}
+              style={{ padding: "8px 10px", borderRadius: 12, border: "1px solid #ddd", background: "#fff", cursor: "pointer" }}
+            >
+              ตัวกรอง Tag…
+            </button>
+
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {listFilterTags.length === 0 ? <span style={{ fontSize: 12, opacity: 0.65 }}>(ไม่กรอง tag)</span> : null}
+              {listFilterTags.map((t) => (
+                <TagPill key={t} text={t} />
+              ))}
+            </div>
+
+            <div style={{ flex: 1 }} />
+
+            <input
+              value={listSearch}
+              onChange={(e) => setListSearch(e.target.value)}
+              placeholder="ค้นหา keyword (ชื่อกิจกรรม / tag / เด็ก / note)…"
+              style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd", width: 360, maxWidth: "100%" }}
+            />
+          </div>
+
+          <div style={{ marginTop: 14 }}>
+            {listViewGrouped.length === 0 ? (
+              <div style={{ opacity: 0.7 }}>(ไม่พบกิจกรรม)</div>
+            ) : (
+              <div style={{ display: "grid", gap: 14 }}>
+                {listViewGrouped.map(([dayKey, evs]) => (
+                  <div key={dayKey} style={{ border: "1px solid #eee", borderRadius: 14, overflow: "hidden" }}>
+                    <div style={{ padding: "10px 12px", background: "#fafafa", fontWeight: 900 }}>
+                      {dayKey}
+                    </div>
+                    <div style={{ padding: 12, display: "grid", gap: 10 }}>
+                      {evs.map((ev) => {
+                        const notes = ev.suggestNotes ?? {};
+                        const noteKidIds = Object.keys(notes);
+                        return (
+                          <div key={ev.id} style={{ padding: 12, borderRadius: 14, border: "1px solid #eee", background: "#fff" }}>
+                            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                              <div style={{ fontWeight: 900, fontSize: 15, flex: 1, minWidth: 240 }}>{ev.title}</div>
+                              <div style={{ fontSize: 12, opacity: 0.75 }}>
+                                {ymd(ev.start)} {hm(ev.start)} – {ymd(ev.end)} {hm(ev.end)}
+                              </div>
+                              <button
+                                onClick={() => {
+                                  setOpenListView(false);
+                                  openEventDetail(ev.id);
+                                }}
+                                style={{ padding: "6px 8px", borderRadius: 12, border: "1px solid #ddd", background: "#fff", cursor: "pointer", fontSize: 12 }}
+                              >
+                                เปิดรายละเอียด
+                              </button>
+                            </div>
+
+                            <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                              {(ev.tags ?? []).length === 0 ? <span style={{ fontSize: 12, opacity: 0.6 }}>(ไม่มี tag)</span> : null}
+                              {(ev.tags ?? []).map((t) => (
+                                <TagPill key={t} text={t} />
+                              ))}
+                            </div>
+
+                            <div style={{ marginTop: 10 }}>
+                              <div style={{ fontWeight: 900, fontSize: 12 }}>ผู้เข้าร่วม</div>
+                              <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                {(ev.participants ?? []).length === 0 ? (
+                                  <div style={{ opacity: 0.7, fontSize: 12 }}>(ยังไม่มีผู้เข้าร่วม)</div>
+                                ) : (
+                                  (ev.participants ?? []).map((p) => {
+                                    const name = kidById.get(p.kidId)?.name ?? "(เด็กถูกลบแล้ว)";
+                                    const status = p.status ?? 0;
+                                    const bg = status === 0 ? "#fff3bf" : status === 1 ? "#d0ebff" : "#d3f9d8";
+                                    const bd = status === 0 ? "#ffe066" : status === 1 ? "#74c0fc" : "#69db7c";
+                                    return (
+                                      <span
+                                        key={p.kidId}
+                                        style={{
+                                          border: `1px solid ${bd}`,
+                                          background: bg,
+                                          padding: "6px 10px",
+                                          borderRadius: 999,
+                                          fontSize: 13,
+                                          whiteSpace: "nowrap",
+                                        }}
+                                      >
+                                        {name}
+                                      </span>
+                                    );
+                                  })
+                                )}
+                              </div>
+                            </div>
+
+                            {noteKidIds.length > 0 ? (
+                              <div style={{ marginTop: 10 }}>
+                                <div style={{ fontWeight: 900, fontSize: 12 }}>Notes</div>
+                                <div style={{ marginTop: 8, display: "grid", gap: 6 }}>
+                                  {noteKidIds.map((kidId) => {
+                                    const name = kidById.get(kidId)?.name ?? "(เด็กถูกลบแล้ว)";
+                                    return (
+                                      <div key={kidId} style={{ fontSize: 12, opacity: 0.85 }}>
+                                        📝 <span style={{ fontWeight: 800 }}>{name}</span>: {notes[kidId]}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </Modal>
       ) : null}
