@@ -84,7 +84,7 @@ function intersectionCount(a = [], bSet) {
 }
 
 // ------------------ UI bits ------------------
-function Modal({ title, onClose, children, width = 840 }) {
+function Modal({ title, onClose, children, width = 840, zIndex = 999 }) {
   return (
     <div
       style={{
@@ -93,7 +93,7 @@ function Modal({ title, onClose, children, width = 840 }) {
         background: "rgba(0,0,0,0.35)",
         display: "grid",
         placeItems: "center",
-        zIndex: 999,
+        zIndex: zIndex,
         padding: 16,
       }}
       onMouseDown={(e) => {
@@ -269,7 +269,7 @@ function TagPickerModal({
   };
 
   return (
-    <Modal title={title} onClose={onCancel} width={940}>
+    <Modal title={title} onClose={onCancel} width={940} zIndex={2000}>
       <div style={{ display: "flex", gap: 14, alignItems: "stretch" }}>
         <div style={{ width: 260, borderRight: "1px solid #eee", paddingRight: 14 }}>
           <div style={{ fontWeight: 900, marginBottom: 10 }}>หมวด</div>
