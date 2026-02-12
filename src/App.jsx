@@ -26,6 +26,18 @@ const pad2 = (n) => String(n).padStart(2, "0");
 const ymd = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 const hm = (d) => `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 
+// Revive Date objects inside events loaded from JSON (Supabase jsonb stores Dates as ISO strings)
+function reviveEvents(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((ev) => {
+    if (!ev || typeof ev !== "object") return ev;
+    const start = ev.start instanceof Date ? ev.start : ev.start ? new Date(ev.start) : ev.start;
+    const end = ev.end instanceof Date ? ev.end : ev.end ? new Date(ev.end) : ev.end;
+    return { ...ev, start, end };
+  });
+}
+
+
 function combineDateTime(dateStr, timeStr) {
   const [y, m, d] = dateStr.split("-").map(Number);
   const [hh, mm] = timeStr.split(":").map(Number);
@@ -698,7 +710,7 @@ export default function App() {
           const payload = data.data;
           if (payload.tagCatalog) setTagCatalog(payload.tagCatalog);
           if (Array.isArray(payload.kids)) setKids(payload.kids);
-          if (Array.isArray(payload.events)) setEvents(payload.events);
+          if (Array.isArray(payload.events)) setEvents(reviveEvents(payload.events));
         }
         hydratedRef.current = true;
       }
