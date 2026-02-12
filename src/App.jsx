@@ -1240,7 +1240,7 @@ export default function App() {
                     🗑️
                   </IconButton>
                 </div>
-              </div>
+              </div> 
 
               <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
                 {(kid.tags ?? []).length === 0 ? <span style={{ fontSize: 12, opacity: 0.6 }}>(ยังไม่มี tag)</span> : null}
