@@ -1,4 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+
+import { createClient } from "@supabase/supabase-js";
 
 /**
  * Kids Calendar (Month Grid) - dependency-free.
@@ -9,13 +11,19 @@ import { useMemo, useState } from "react";
  * 4) Event detail shows ⚠️ if there are new kids with matchScore > 1 not yet suggested/assigned.
  */
 
+// ---- Supabase (minimal persistence) ----
+// Stores only app data (tagCatalog, kids, events) into table: public.app_state (id = "default").
+// This is intentionally minimal to avoid touching existing UI/business logic.
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const supabase =
+  SUPABASE_URL && SUPABASE_ANON_KEY
+    ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+    : null;
+
 // ------------------ tiny utils ------------------
 const pad2 = (n) => String(n).padStart(2, "0");
 const ymd = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-
-// safe key-existence check (treat empty string as "noted")
-const hasKey = (obj, key) => obj != null && Object.prototype.hasOwnProperty.call(obj, key);
-
 const hm = (d) => `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 
 function combineDateTime(dateStr, timeStr) {
@@ -588,7 +596,7 @@ function MonthCalendar({ cursor, setCursor, events, onPickDay, onOpenEvent, atte
               <div style={{ marginTop: 6, display: "grid", gap: 6 }}>
                 {list.slice(0, 4).map((ev) => {
                   const unassigned = (ev.participants?.length ?? 0) === 0;
-                  const needsAttention = (attentionById?.[ev.id] ?? 0) > 0;
+                  const needsAttention = unassigned || ((attentionById?.[ev.id] ?? 0) > 0);
                   const isStart = sameDay(d, ev.start);
                   const timeLabel = isStart ? hm(ev.start) : "↔";
                   return (
@@ -664,6 +672,75 @@ export default function App() {
   // Events
   // { id, title, start: Date, end: Date, tags: string[], participants: [{kidId,status}] }
   const [events, setEvents] = useState([]);
+
+  // ---- Supabase persistence (load once, then auto-save on data changes) ----
+  const hydratedRef = useRef(false);
+  const saveTimerRef = useRef(null);
+
+  // Load saved state from Supabase on first mount (if configured)
+  useEffect(() => {
+    let cancelled = false;
+
+    const hydrate = async () => {
+      if (!supabase) {
+        hydratedRef.current = true;
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from("app_state")
+        .select("data")
+        .eq("id", "default")
+        .maybeSingle();
+
+      if (!cancelled) {
+        if (!error && data?.data) {
+          const payload = data.data;
+          if (payload.tagCatalog) setTagCatalog(payload.tagCatalog);
+          if (Array.isArray(payload.kids)) setKids(payload.kids);
+          if (Array.isArray(payload.events)) setEvents(payload.events);
+        }
+        hydratedRef.current = true;
+      }
+    };
+
+    hydrate();
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Auto-save whenever core app data changes
+  useEffect(() => {
+    if (!hydratedRef.current) return;
+    if (!supabase) return;
+
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+
+    saveTimerRef.current = setTimeout(async () => {
+      try {
+        await supabase.from("app_state").upsert(
+          [
+            {
+              id: "default",
+              data: { tagCatalog, kids, events },
+              updated_at: new Date().toISOString(),
+            },
+          ],
+          { onConflict: "id" }
+        );
+      } catch (e) {
+        // keep UI responsive even if save fails
+        console.error("Supabase save failed:", e);
+      }
+    }, 300);
+
+    return () => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    };
+  }, [tagCatalog, kids, events]);
 
   // Calendar cursor
   const [calCursor, setCalCursor] = useState(startOfMonth(new Date()));
@@ -1071,21 +1148,20 @@ export default function App() {
     return hits;
   }, [activeEventForDetail, kids]);
   const attentionById = useMemo(() => {
-    // Count kids that match this event's tags (i.e., would appear in Suggest)
-    // but have NOT been handled yet (neither confirmed/assigned nor noted).
     const out = {};
     for (const ev of events) {
+      const baseline = ev.suggestedAt ?? 0;
+      if (!baseline) { out[ev.id] = 0; continue; }
       const evTagsSet = new Set(ev.tags ?? []);
       if (evTagsSet.size === 0) { out[ev.id] = 0; continue; }
-
       const assigned = new Set((ev.participants ?? []).map((p) => p.kidId));
       let c = 0;
       for (const k of kids) {
-        if (assigned.has(k.id)) continue; // confirmed/assigned already handled
+        if (assigned.has(k.id)) continue;
+        const createdAt = k.createdAt ?? 0;
+        if (createdAt <= baseline) continue;
         const score = intersectionCount(k.tags ?? [], evTagsSet);
-        if (score <= 0) continue; // not in suggest
-        const noted = hasKey(ev.suggestNotes ?? {}, k.id); // note saved (even if empty string)
-        if (!noted) c++;
+        if (score > 1) { c++; }
       }
       out[ev.id] = c;
     }
@@ -1240,7 +1316,7 @@ export default function App() {
                     🗑️
                   </IconButton>
                 </div>
-              </div> 
+              </div>
 
               <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
                 {(kid.tags ?? []).length === 0 ? <span style={{ fontSize: 12, opacity: 0.6 }}>(ยังไม่มี tag)</span> : null}
@@ -1504,7 +1580,7 @@ export default function App() {
                       <input type="checkbox" checked={!!suggestSelection[kid.id]} onChange={() => toggleSuggestPick(kid.id)} />
                       <div style={{ flex: 1 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <div style={{ fontWeight: 900, background: hasKey(activeEventForSuggest?.suggestNotes ?? {}, kid.id) ? "#eee" : "transparent", padding: hasKey(activeEventForSuggest?.suggestNotes ?? {}, kid.id) ? "2px 6px" : 0, borderRadius: hasKey(activeEventForSuggest?.suggestNotes ?? {}, kid.id) ? 8 : 0, display: "inline-block" }}>
+                          <div style={{ fontWeight: 900 }}>
                             {kid.name}{" "}
                             {newCandidateIdsForSuggest.has(kid.id) ? (
                               <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 900, color: "#b42318" }}>NEW</span>
