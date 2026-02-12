@@ -1749,7 +1749,7 @@ export default function App() {
             />
           </div>
 
-          <div style={{ marginTop: 14 }}>
+          <div style={{ marginTop: 14, maxHeight: "70vh", overflowY: "auto" }}>
             {listViewGrouped.length === 0 ? (
               <div style={{ opacity: 0.7 }}>(ไม่พบกิจกรรม)</div>
             ) : (
