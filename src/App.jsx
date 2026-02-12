@@ -611,7 +611,7 @@ function MonthCalendar({ cursor, setCursor, events, onPickDay, onOpenEvent, atte
               <div style={{ marginTop: 6, display: "grid", gap: 6 }}>
                 {list.slice(0, 4).map((ev) => {
                   const unassigned = (ev.participants?.length ?? 0) === 0;
-                  const needsAttention = unassigned || ((attentionById?.[ev.id] ?? 0) > 0);
+                  const needsAttention = ((attentionById?.[ev.id] ?? 0) > 0);
                   const isStart = sameDay(d, ev.start);
                   const timeLabel = isStart ? hm(ev.start) : "↔";
                   return (
@@ -1171,20 +1171,24 @@ export default function App() {
   const attentionById = useMemo(() => {
     const out = {};
     for (const ev of events) {
-      const baseline = ev.suggestedAt ?? 0;
-      if (!baseline) { out[ev.id] = 0; continue; }
       const evTagsSet = new Set(ev.tags ?? []);
       if (evTagsSet.size === 0) { out[ev.id] = 0; continue; }
+
+      // ⚠️ should show only when there are suggested candidates (tag match, not yet assigned)
+      // that still have NO note (i.e., not yet "considered").
+      const notes = ev.suggestNotes ?? {};
       const assigned = new Set((ev.participants ?? []).map((p) => p.kidId));
-      let c = 0;
+
+      let pending = 0;
       for (const k of kids) {
         if (assigned.has(k.id)) continue;
-        const createdAt = k.createdAt ?? 0;
-        if (createdAt <= baseline) continue;
         const score = intersectionCount(k.tags ?? [], evTagsSet);
-        if (score > 1) { c++; }
+        if (score <= 0) continue;
+
+        const noteText = (notes[k.id] ?? "").trim();
+        if (!noteText) pending++;
       }
-      out[ev.id] = c;
+      out[ev.id] = pending;
     }
     return out;
   }, [events, kids]);
@@ -1643,8 +1647,9 @@ export default function App() {
                         gap: 10,
                         padding: 10,
                         borderRadius: 12,
-                        border: newCandidateIdsForSuggest.has(kid.id) ? "1px solid #ffb3b3" : "1px solid #eee",
-                        background: newCandidateIdsForSuggest.has(kid.id) ? "#fff1f1" : "#fff",
+                        border: ((activeEventForSuggest.suggestNotes ?? {})[kid.id] ?? "").trim() ? "1px solid #cfcfcf" : (newCandidateIdsForSuggest.has(kid.id) ? "1px solid #ffb3b3" : "1px solid #eee"),
+                        background: ((activeEventForSuggest.suggestNotes ?? {})[kid.id] ?? "").trim() ? "#eee" : (newCandidateIdsForSuggest.has(kid.id) ? "#fff1f1" : "#fff"),
+
                         cursor: "pointer",
                       }}
                     >
