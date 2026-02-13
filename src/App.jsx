@@ -259,13 +259,13 @@ function TagPickerModal({
     if (next === null) return;
     const t = clampStr(next);
     if (!t || t === tag) return;
-    onRenameTag(tag, t);
+    onRenameTag(activeCategory, tag, t);
   };
 
   const askDeleteTag = (tag) => {
     if (!allowEditLibrary || !onDeleteTag) return;
-    if (!confirm(`ลบ Tag "${tag}"?\n(จะถูกลบออกจากเด็ก/กิจกรรม/ตัวกรองทั้งหมด)`)) return;
-    onDeleteTag(tag);
+    if (!confirm(`ลบ Tag "${tag}" ในหมวด “${activeCategory}”?`)) return;
+    onDeleteTag(activeCategory, tag);
   };
 
   return (
@@ -847,6 +847,30 @@ export default function App() {
     setEditKidTags((prev) => removeFrom(prev));
     setEvTags((prev) => removeFrom(prev));
     setEditEventTags((prev) => removeFrom(prev));
+  };
+
+  // Scoped rename/delete: only affects tagCatalog within a single category (does NOT propagate to kids/events).
+  const renameTagInCategory = (category, oldTag, newTag) => {
+    const cat = clampStr(category);
+    const o = clampStr(oldTag);
+    const n = clampStr(newTag);
+    if (!cat || !o || !n || o === n) return;
+    setTagCatalog((prev) => {
+      const list = prev[cat] ?? [];
+      const nextList = Array.from(new Set(list.map((t) => (t === o ? n : t))));
+      return { ...prev, [cat]: nextList };
+    });
+  };
+
+  const deleteTagInCategory = (category, tag) => {
+    const cat = clampStr(category);
+    const t = clampStr(tag);
+    if (!cat || !t) return;
+    setTagCatalog((prev) => {
+      const list = prev[cat] ?? [];
+      const nextList = list.filter((x) => x !== t);
+      return { ...prev, [cat]: nextList };
+    });
   };
 
   // ---------- kids actions ----------
@@ -1479,8 +1503,8 @@ export default function App() {
         onSave={() => setOpenTagLibrary(false)}
         saveLabel="ปิด"
         allowEditLibrary={true}
-        onRenameTag={renameTagEverywhere}
-        onDeleteTag={deleteTagEverywhere}
+        onRenameTag={renameTagInCategory}
+        onDeleteTag={deleteTagInCategory}
       />
 
       {/* Kid filter modal */}
