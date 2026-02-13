@@ -133,7 +133,7 @@ function Modal({ title, onClose, children, width = 840, zIndex = 999 }) {
             ปิด
           </button>
         </div>
-        <div style={{ padding: 14 }}>{children}</div>
+        <div style={{ padding: 14, maxHeight: "80vh", overflowY: "auto" }}>{children}</div>
       </div>
     </div>
   );
