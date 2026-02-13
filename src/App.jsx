@@ -336,7 +336,7 @@ function TagPickerModal({
           </div>
 
           {/* Tag list */}
-          <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+          <div style={{ marginTop: 10, display: "grid", gap: 8, maxHeight: "70vh", overflowY: "auto" }}>
             {(tagCatalog[activeCategory] ?? []).length === 0 ? (
               <div style={{ opacity: 0.7 }}>หมวดนี้ยังไม่มี tag</div>
             ) : (
