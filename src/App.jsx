@@ -742,16 +742,7 @@ export default function App() {
 
     saveTimerRef.current = setTimeout(async () => {
       try {
-        await supabase.from("app_state").upsert(
-          [
-            {
-              id: "default",
-              data: { tagCatalog, kids, events },
-              updated_at: new Date().toISOString(),
-            },
-          ],
-          { onConflict: "id" }
-        );
+        await supabase.from("app_state").upsert([{ id: "default", data: payload, updated_at: new Date().toISOString() }], { onConflict: "id" });
       } catch (e) {
         // keep UI responsive even if save fails
         console.error("Supabase save failed:", e);
