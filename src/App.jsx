@@ -697,6 +697,8 @@ export default function App() {
   // ---- Supabase persistence (load once, then auto-save on data changes) ----
   const hydratedRef = useRef(false);
   const saveTimerRef = useRef(null);
+  const [appVersion, setAppVersion] = useState(null);
+  const appVersionRef = useRef(null);
 
   // Load saved state from Supabase on first mount (if configured)
   useEffect(() => {
@@ -710,16 +712,29 @@ export default function App() {
 
       const { data, error } = await supabase
         .from("app_state")
-        .select("data")
+        .select("data,version")
         .eq("id", "default")
         .maybeSingle();
 
       if (!cancelled) {
-        if (!error && data?.data) {
-          const payload = data.data;
-          if (payload.tagCatalog) setTagCatalog(payload.tagCatalog);
-          if (Array.isArray(payload.kids)) setKids(payload.kids);
-          if (Array.isArray(payload.events)) setEvents(reviveEvents(payload.events));
+        if (!error) {
+          const remoteVersion = typeof data?.version === "number" ? data.version : 0;
+          appVersionRef.current = remoteVersion;
+          setAppVersion(remoteVersion);
+
+          if (data?.data) {
+            const payload = data.data;
+            if (payload.tagCatalog) setTagCatalog(payload.tagCatalog);
+            if (Array.isArray(payload.kids)) setKids(payload.kids);
+            if (Array.isArray(payload.events)) setEvents(reviveEvents(payload.events));
+          } else {
+            // No row yet — create default state once so future updates can use optimistic locking.
+            await supabase.from("app_state").insert([
+              { id: "default", data: { tagCatalog: {}, kids: [], events: [] }, version: 0, updated_at: new Date().toISOString() },
+            ]);
+            appVersionRef.current = 0;
+            setAppVersion(0);
+          }
         }
         hydratedRef.current = true;
       }
@@ -742,7 +757,45 @@ export default function App() {
 
     saveTimerRef.current = setTimeout(async () => {
       try {
-        await supabase.from("app_state").upsert([{ id: "default", data: { tagCatalog, kids, events }, updated_at: new Date().toISOString() }], { onConflict: "id" });
+        const payload = { tagCatalog, kids, events };
+        const currentVersion = typeof appVersionRef.current === "number" ? appVersionRef.current : 0;
+        const nextVersion = currentVersion + 1;
+
+        // Optimistic locking: only update if the version hasn't changed since last load/save.
+        const { data: updatedRow, error: updateErr } = await supabase
+          .from("app_state")
+          .update({ data: payload, version: nextVersion, updated_at: new Date().toISOString() })
+          .eq("id", "default")
+          .eq("version", currentVersion)
+          .select("version,data")
+          .maybeSingle();
+
+        if (updateErr) throw updateErr;
+
+        if (!updatedRow) {
+          // Someone else saved first. Reload latest state and avoid overwriting silently.
+          const { data: latest, error: latestErr } = await supabase
+            .from("app_state")
+            .select("data,version")
+            .eq("id", "default")
+            .maybeSingle();
+
+          if (!latestErr && latest?.data) {
+            const p = latest.data;
+            if (p.tagCatalog) setTagCatalog(p.tagCatalog);
+            if (Array.isArray(p.kids)) setKids(p.kids);
+            if (Array.isArray(p.events)) setEvents(reviveEvents(p.events));
+            const v = typeof latest?.version === "number" ? latest.version : 0;
+            appVersionRef.current = v;
+            setAppVersion(v);
+          }
+
+          alert("มีการแก้ไขจากคนอื่นก่อนหน้า ระบบโหลดข้อมูลล่าสุดแล้ว (การแก้ไขของคุณรอบนี้ยังไม่ได้บันทึก).");
+          return;
+        }
+
+        appVersionRef.current = updatedRow.version;
+        setAppVersion(updatedRow.version);
       } catch (e) {
         // keep UI responsive even if save fails
         console.error("Supabase save failed:", e);
