@@ -693,6 +693,9 @@ export default function App() {
   const [listFilterTags, setListFilterTags] = useState([]);
   const [openListFilterTagPicker, setOpenListFilterTagPicker] = useState(false);
   const [listSearch, setListSearch] = useState("");
+  const [listFromDate, setListFromDate] = useState("");
+  const [listToDate, setListToDate] = useState("");
+  const [listNowEpoch, setListNowEpoch] = useState(Date.now());
 
   // ---- Supabase persistence (load once, then auto-save on data changes) ----
   const hydratedRef = useRef(false);
@@ -819,6 +822,7 @@ export default function App() {
   const [evEndTime, setEvEndTime] = useState("10:00");
   const [evTags, setEvTags] = useState([]);
   const [openEvTagPicker, setOpenEvTagPicker] = useState(false);
+  const [evSignupUrl, setEvSignupUrl] = useState("");
 
   // Modals
   const [openTagLibrary, setOpenTagLibrary] = useState(false);
@@ -840,6 +844,7 @@ export default function App() {
   const [editEndDate, setEditEndDate] = useState("");
   const [editStartTime, setEditStartTime] = useState("");
   const [editEndTime, setEditEndTime] = useState("");
+  const [editSignupUrl, setEditSignupUrl] = useState("");
 
   // ---------- Tag rename/delete propagation ----------
   const renameTagEverywhere = (oldTag, newTag) => {
@@ -1032,17 +1037,23 @@ export default function App() {
     const end = combineDateTime(evEndDate, evEndTime);
     if (start >= end) return alert("วัน/เวลาเริ่มต้องก่อนวัน/เวลาจบ");
 
+    const rawLink = clampStr(evSignupUrl);
+    const signupUrl = rawLink ? (rawLink.startsWith("http://") || rawLink.startsWith("https://") ? rawLink : `https://${rawLink}`) : "";
+
     const ev = {
       id: crypto.randomUUID(),
       title: t,
       start,
       end,
       tags: evTags,
+      signupUrl,
       participants: [],
     };
 
     setEvents((prev) => [...prev, ev]);
     setEvTitle("");
+    setEvSignupUrl("");
+    setEvTags([]);
 
     openSuggestForEvent(ev.id);
   };
@@ -1086,6 +1097,7 @@ export default function App() {
     setEditEndDate(ymd(ev.end));
     setEditStartTime(hm(ev.start));
     setEditEndTime(hm(ev.end));
+    setEditSignupUrl(ev.signupUrl ?? "");
     setOpenEditEventInfo(true);
   };
   const saveEditEventInfo = () => {
@@ -1097,8 +1109,11 @@ export default function App() {
     const end = combineDateTime(editEndDate, editEndTime);
     if (start >= end) return alert("วัน/เวลาเริ่มต้องก่อนวัน/เวลาจบ");
 
+    const rawLink = clampStr(editSignupUrl);
+    const signupUrl = rawLink ? (rawLink.startsWith("http://") || rawLink.startsWith("https://") ? rawLink : `https://${rawLink}`) : "";
+
     setEvents((prev) =>
-      prev.map((e) => (e.id === editInfoEventId ? { ...e, title: t, start, end } : e))
+      prev.map((e) => (e.id === editInfoEventId ? { ...e, title: t, start, end, signupUrl } : e))
     );
     setOpenEditEventInfo(false);
     setEditInfoEventId(null);
@@ -1288,11 +1303,23 @@ export default function App() {
       return hay.includes(q);
     };
 
+    const nowEpoch = listNowEpoch;
+    const fromBound = listFromDate ? combineDateTime(listFromDate, "00:00") : null;
+    const toBound = listToDate ? combineDateTime(listToDate, "23:59") : null;
+    const matchDate = (ev) => {
+      const s = ev.start instanceof Date ? ev.start : ev.start ? new Date(ev.start) : null;
+      const e = ev.end instanceof Date ? ev.end : ev.end ? new Date(ev.end) : null;
+      if (e && e.getTime() < nowEpoch) return false; // hide past (based on time when list view opened)
+      if (fromBound && e && e < fromBound) return false;
+      if (toBound && s && s > toBound) return false;
+      return true;
+    };
+
     return (events ?? [])
-      .filter((ev) => matchTags(ev) && matchQuery(ev))
+      .filter((ev) => matchTags(ev) && matchQuery(ev) && matchDate(ev))
       .slice()
       .sort((a, b) => (a.start?.getTime?.() ?? 0) - (b.start?.getTime?.() ?? 0));
-  }, [events, kidById, listFilterTags, listSearch]);
+  }, [events, kidById, listFilterTags, listSearch, listFromDate, listToDate, listNowEpoch]);
 
   const listViewGrouped = useMemo(() => {
     const groups = new Map(); // ymd(dayStart) -> events[]
@@ -1490,6 +1517,8 @@ export default function App() {
           <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
             <input placeholder="ชื่อกิจกรรม…" value={evTitle} onChange={(e) => setEvTitle(e.target.value)} style={{ padding: 10, minWidth: 260, flex: 1, borderRadius: 12, border: "1px solid #ddd" }} />
 
+            <input placeholder="ลิงก์สมัคร (ถ้ามี)…" value={evSignupUrl} onChange={(e) => setEvSignupUrl(e.target.value)} style={{ padding: 10, minWidth: 220, flex: 1, borderRadius: 12, border: "1px solid #ddd" }} />
+
             <label style={{ display: "grid", gap: 4 }}>
               <span style={{ fontSize: 12, opacity: 0.7 }}>วันที่เริ่ม</span>
               <input type="date" value={evStartDate} onChange={(e) => setEvStartDate(e.target.value)} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd" }} />
@@ -1530,7 +1559,7 @@ export default function App() {
             onPickDay={pickDay}
             onOpenEvent={openEventDetail}
             attentionById={attentionById}
-            onOpenListView={() => setOpenListView(true)}
+            onOpenListView={() => { setListNowEpoch(Date.now()); setOpenListView(true); }}
           />
         </div>
       </div>
@@ -1636,6 +1665,11 @@ export default function App() {
             <label style={{ display: "grid", gap: 6 }}>
               <div style={{ fontWeight: 900 }}>ชื่อกิจกรรม</div>
               <input value={editTitle} onChange={(e) => setEditTitle(e.target.value)} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd" }} />
+            </label>
+
+            <label style={{ display: "grid", gap: 6 }}>
+              <div style={{ fontWeight: 900 }}>ลิงก์สมัคร (ถ้ามี)</div>
+              <input value={editSignupUrl} onChange={(e) => setEditSignupUrl(e.target.value)} placeholder="https://..." style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd" }} />
             </label>
 
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -1814,6 +1848,15 @@ export default function App() {
 
             <div style={{ flex: 1 }} />
 
+            <label style={{ display: "grid", gap: 4 }}>
+              <span style={{ fontSize: 12, opacity: 0.7 }}>จากวันที่</span>
+              <input type="date" value={listFromDate} onChange={(e) => setListFromDate(e.target.value)} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd" }} />
+            </label>
+            <label style={{ display: "grid", gap: 4 }}>
+              <span style={{ fontSize: 12, opacity: 0.7 }}>ถึงวันที่</span>
+              <input type="date" value={listToDate} onChange={(e) => setListToDate(e.target.value)} style={{ padding: 10, borderRadius: 12, border: "1px solid #ddd" }} />
+            </label>
+
             <input
               value={listSearch}
               onChange={(e) => setListSearch(e.target.value)}
@@ -1840,8 +1883,13 @@ export default function App() {
                           <div key={ev.id} style={{ padding: 12, borderRadius: 14, border: "1px solid #eee", background: "#fff" }}>
                             <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                               <div style={{ fontWeight: 900, fontSize: 15, flex: 1, minWidth: 240 }}>{ev.title}</div>
-                              <div style={{ fontSize: 12, opacity: 0.75 }}>
-                                {ymd(ev.start)} {hm(ev.start)} – {ymd(ev.end)} {hm(ev.end)}
+                              <div style={{ fontSize: 12, opacity: 0.75, display: "flex", alignItems: "center", gap: 8 }}>
+                                <span>{ymd(ev.start)} {hm(ev.start)} – {ymd(ev.end)} {hm(ev.end)}</span>
+                                {ev.signupUrl ? (
+                                  <a href={ev.signupUrl} target="_blank" rel="noreferrer" title="เปิดลิงก์สมัคร" style={{ textDecoration: "none", fontSize: 16 }}>
+                                    🔗
+                                  </a>
+                                ) : null}
                               </div>
                               <button
                                 onClick={() => {
@@ -1945,6 +1993,14 @@ export default function App() {
               <div style={{ marginTop: 4 }}>
                 {ymd(activeEventForDetail.start)} {hm(activeEventForDetail.start)} – {ymd(activeEventForDetail.end)} {hm(activeEventForDetail.end)}
               </div>
+
+              {activeEventForDetail.signupUrl ? (
+                <div style={{ marginTop: 6 }}>
+                  <a href={activeEventForDetail.signupUrl} target="_blank" rel="noreferrer" title="เปิดลิงก์สมัคร" style={{ textDecoration: "none", fontSize: 18 }}>
+                    🔗
+                  </a>
+                </div>
+              ) : null}
 
               <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <button onClick={() => { setActiveEventIdForDetail(null); openEditInfoForEvent(activeEventForDetail.id); }} style={{ padding: "8px 10px", borderRadius: 12, border: "1px solid #ddd", background: "#fff", cursor: "pointer" }}>
