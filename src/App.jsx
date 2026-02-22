@@ -672,6 +672,7 @@ export default function App() {
 
   const [newKidName, setNewKidName] = useState("");
   const [newKidTags, setNewKidTags] = useState([]);
+  const [newKidGroupId, setNewKidGroupId] = useState("");
   const [openNewKidTagPicker, setOpenNewKidTagPicker] = useState(false);
 
   const [openEditKidTagPicker, setOpenEditKidTagPicker] = useState(false);
@@ -927,11 +928,13 @@ export default function App() {
     const name = clampStr(newKidName);
     if (!name) return;
     const id = crypto.randomUUID();
-    const kid = { id, name, tags: newKidTags, createdAt: Date.now() };
+    const group_id = clampStr(newKidGroupId);
+    const kid = { id, name, tags: newKidTags, group_id, createdAt: Date.now() };
     setKids((prev) => [...prev, kid]);
     setVisible((prev) => ({ ...prev, [id]: true }));
     setNewKidName("");
     setNewKidTags([]);
+    setNewKidGroupId("");
   };
 
   const renameKid = (kidId) => {
@@ -942,6 +945,15 @@ export default function App() {
     const t = clampStr(next);
     if (!t) return;
     setKids((prev) => prev.map((k) => (k.id === kidId ? { ...k, name: t } : k)));
+  };
+  const editKidGroupId = (kidId) => {
+    const kid = kidById.get(kidId);
+    if (!kid) return;
+    const current = kid.group_id ? String(kid.group_id) : "";
+    const next = prompt("แก้ group_id (Line group id) ของเด็กคนนี้:", current);
+    if (next === null) return;
+    const t = clampStr(next);
+    setKids((prev) => prev.map((k) => (k.id === kidId ? { ...k, group_id: t } : k)));
   };
 
   const deleteKid = (kidId) => {
@@ -1430,6 +1442,14 @@ export default function App() {
             style={{ width: "100%", padding: 10, borderRadius: 12, border: "1px solid #ddd" }}
           />
 
+          <input
+            placeholder="group_id (Line group id)..."
+            value={newKidGroupId}
+            onChange={(e) => setNewKidGroupId(e.target.value)}
+            onKeyDown={(e) => (e.key === "Enter" ? addKid() : null)}
+            style={{ width: "100%", padding: 10, borderRadius: 12, border: "1px solid #ddd" }}
+          />
+
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <button
               onClick={() => setOpenNewKidTagPicker(true)}
@@ -1470,8 +1490,30 @@ export default function App() {
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <input type="checkbox" checked={!!visible[kid.id]} onChange={() => toggleVisible(kid.id)} />
 
-                <div style={{ flex: 1, fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {kid.name}
+                <div style={{ flex: 1, overflow: "hidden" }}>
+                  <div style={{ fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {kid.name}
+                  </div>
+                  <div style={{ marginTop: 2, display: "flex", alignItems: "center", gap: 6, fontSize: 12, opacity: 0.75, overflow: "hidden" }}>
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      group_id: {kid.group_id ? kid.group_id : "-"}
+                    </span>
+                    <button
+                      onClick={() => editKidGroupId(kid.id)}
+                      style={{
+                        padding: "2px 6px",
+                        borderRadius: 8,
+                        border: "1px solid #ddd",
+                        background: "#fff",
+                        cursor: "pointer",
+                        fontSize: 12,
+                        lineHeight: "16px",
+                        opacity: 0.9,
+                      }}
+                    >
+                      edit
+                    </button>
+                  </div>
                 </div>
 
                 <div style={{ display: "flex", gap: 6 }}>
