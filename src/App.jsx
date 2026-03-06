@@ -488,7 +488,7 @@ function TagPickerModal({
 }
 
 // ------------------ Calendar (month grid) ------------------
-function MonthCalendar({ cursor, setCursor, events, onPickDay, onOpenEvent, attentionById, onOpenListView }) {
+function MonthCalendar({ cursor, setCursor, events, onPickDay, onOpenEvent, attentionById, onOpenListView, onOpenDayListView }) {
   const monthStart = startOfMonth(cursor);
   const gridStart = startOfWeekMonday(monthStart);
 
@@ -637,7 +637,23 @@ function MonthCalendar({ cursor, setCursor, events, onPickDay, onOpenEvent, atte
                     </button>
                   );
                 })}
-                {list.length > 4 ? <div style={{ fontSize: 11, opacity: 0.65 }}>+ {list.length - 4} more</div> : null}
+                {list.length > 4 ? (
+                  <button
+                    onClick={() => onOpenDayListView?.(d)}
+                    style={{
+                      textAlign: "left",
+                      border: "none",
+                      background: "transparent",
+                      padding: 0,
+                      cursor: "pointer",
+                      fontSize: 11,
+                      opacity: 0.65,
+                    }}
+                    title="ดูกิจกรรมทั้งหมดของวันนี้"
+                  >
+                    + {list.length - 4} more
+                  </button>
+                ) : null}
               </div>
             </div>
           );
@@ -696,7 +712,6 @@ export default function App() {
   const [listSearch, setListSearch] = useState("");
   const [listFromDate, setListFromDate] = useState("");
   const [listToDate, setListToDate] = useState("");
-  const [listNowEpoch, setListNowEpoch] = useState(Date.now());
 
   // ---- Supabase persistence (load once, then auto-save on data changes) ----
   const hydratedRef = useRef(false);
@@ -1288,6 +1303,13 @@ export default function App() {
     return out;
   }, [events, kids]);
 
+  const openListViewForDay = (day) => {
+    const dayKey = ymd(day);
+    setListFromDate(dayKey);
+    setListToDate(dayKey);
+    setOpenListView(true);
+  };
+
   // ---------- List View data ----------
   const listViewEvents = useMemo(() => {
     const norm = (s) => String(s ?? "").toLowerCase().trim();
@@ -1315,38 +1337,52 @@ export default function App() {
       return hay.includes(q);
     };
 
-    const nowEpoch = listNowEpoch;
     const fromBound = listFromDate ? combineDateTime(listFromDate, "00:00") : null;
     const toBound = listToDate ? combineDateTime(listToDate, "23:59") : null;
     const matchDate = (ev) => {
       const s = ev.start instanceof Date ? ev.start : ev.start ? new Date(ev.start) : null;
       const e = ev.end instanceof Date ? ev.end : ev.end ? new Date(ev.end) : null;
-      if (e && e.getTime() < nowEpoch) return false; // hide past (based on time when list view opened)
       if (fromBound && e && e < fromBound) return false;
       if (toBound && s && s > toBound) return false;
       return true;
     };
 
-    return (events ?? [])
+    return (visibleEvents ?? [])
       .filter((ev) => matchTags(ev) && matchQuery(ev) && matchDate(ev))
       .slice()
       .sort((a, b) => (a.start?.getTime?.() ?? 0) - (b.start?.getTime?.() ?? 0));
-  }, [events, kidById, listFilterTags, listSearch, listFromDate, listToDate, listNowEpoch]);
+  }, [visibleEvents, kidById, listFilterTags, listSearch, listFromDate, listToDate]);
 
   const listViewGrouped = useMemo(() => {
     const groups = new Map(); // ymd(dayStart) -> events[]
+    const filterStart = listFromDate ? atStartOfDay(combineDateTime(listFromDate, "00:00")) : null;
+    const filterEnd = listToDate ? atStartOfDay(combineDateTime(listToDate, "00:00")) : null;
+
     for (const ev of listViewEvents) {
-      const key = ymd(atStartOfDay(ev.start));
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(ev);
+      const rawStart = ev.start instanceof Date ? ev.start : ev.start ? new Date(ev.start) : null;
+      const rawEnd = ev.end instanceof Date ? ev.end : ev.end ? new Date(ev.end) : null;
+      if (!rawStart || !rawEnd) continue;
+
+      let dayStart = atStartOfDay(rawStart);
+      let dayEnd = atStartOfDay(rawEnd);
+
+      if (filterStart && dayStart < filterStart) dayStart = new Date(filterStart);
+      if (filterEnd && dayEnd > filterEnd) dayEnd = new Date(filterEnd);
+
+      for (let d = new Date(dayStart); d <= dayEnd; d = addDays(d, 1)) {
+        const key = ymd(d);
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(ev);
+      }
     }
-    // ensure each group is sorted
+
     for (const [k, arr] of groups) {
       arr.sort((a, b) => (a.start?.getTime?.() ?? 0) - (b.start?.getTime?.() ?? 0));
       groups.set(k, arr);
     }
+
     return Array.from(groups.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-  }, [listViewEvents]);
+  }, [listViewEvents, listFromDate, listToDate]);
 
 
 
@@ -1601,7 +1637,8 @@ export default function App() {
             onPickDay={pickDay}
             onOpenEvent={openEventDetail}
             attentionById={attentionById}
-            onOpenListView={() => { setListNowEpoch(Date.now()); setOpenListView(true); }}
+            onOpenListView={() => setOpenListView(true)}
+            onOpenDayListView={openListViewForDay}
           />
         </div>
       </div>
